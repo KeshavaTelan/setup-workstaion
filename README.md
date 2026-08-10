@@ -23,9 +23,13 @@ A PowerShell script that provisions a fresh Windows machine for development — 
 
 ## Prerequisites
 
-- Windows 10/11 with `winget` available (comes preinstalled on modern Windows; if missing, install "App Installer" from the Microsoft Store)
+- Windows 10/11 with `winget` available (comes preinstalled on modern Windows). If it's missing, the script detects that on startup and offers to install App Installer for you.
 - Administrator access
 - Internet connection
+
+### Testing in Windows Sandbox
+
+Windows Sandbox is a clean way to try this script without touching your real machine, but note that it ships **without** `winget` and resets completely on close. Accept the script's bootstrap prompt when it offers to install App Installer, and remember that nothing installed in the sandbox persists.
 
 ## Setup steps
 
@@ -113,6 +117,7 @@ The script unwraps this automatically — no manual editing of the profile neede
 
 | Issue | Fix |
 |---|---|
+| `'winget' is not recognized` | The script now detects this up front and offers to install App Installer for you — accept the prompt. If that fails, install "App Installer" from the Microsoft Store or from https://aka.ms/getwinget, then re-run |
 | `No '*.code-profile' file found` | Export a profile from VS Code (step 1) and save it in the same folder as the script |
 | Wrong profile picked up | The script uses the first `.code-profile` it finds and warns if there are several — remove the extras |
 | `code` command not recognized | Open a new terminal after VS Code installs, then re-run just the extensions step |

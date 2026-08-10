@@ -43,6 +43,79 @@ function Update-SessionEnvironment {
     }
 }
 
+# Locate winget. It may exist but not be on PATH yet (fresh install, or a
+# session started before App Installer registered), so check the known
+# WindowsApps shim location too.
+function Resolve-WingetCommand {
+    $cmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $shim = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
+    if (Test-Path $shim) { return $shim }
+
+    return $null
+}
+
+# Install App Installer (which provides winget) from the Microsoft Store
+# package. Needed on Windows Sandbox and some stripped/LTSC images, where it
+# is absent by default.
+function Install-WingetBootstrap {
+    Write-Host "Bootstrapping winget (App Installer)..." -ForegroundColor Green
+
+    $previousProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    $temp = Join-Path $env:TEMP "winget-bootstrap-$(Get-Random)"
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+
+    try {
+        # winget's own dependencies must be installed first, in this order.
+        $downloads = @(
+            @{ Name = 'VCLibs';  Url = 'https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx'; File = 'vclibs.appx' },
+            @{ Name = 'UI.Xaml'; Url = 'https://www.nuget.org/api/v2/package/Microsoft.UI.Xaml/2.8.6'; File = 'uixaml.zip' },
+            @{ Name = 'winget';  Url = 'https://aka.ms/getwinget'; File = 'winget.msixbundle' }
+        )
+
+        foreach ($item in $downloads) {
+            Write-Host "   Downloading $($item.Name)..." -ForegroundColor DarkGray
+            Invoke-WebRequest -Uri $item.Url -OutFile (Join-Path $temp $item.File) -UseBasicParsing
+        }
+
+        # The UI.Xaml nuget package is a zip; the appx lives inside it.
+        $xamlZip = Join-Path $temp 'uixaml.zip'
+        $xamlDir = Join-Path $temp 'uixaml'
+        Expand-Archive -Path $xamlZip -DestinationPath $xamlDir -Force
+        $xamlAppx = Get-ChildItem -Path $xamlDir -Recurse -Filter '*.appx' |
+            Where-Object { $_.FullName -match 'x64' } |
+            Select-Object -First 1
+
+        if (-not $xamlAppx) { throw "Could not find the x64 appx inside the UI.Xaml package." }
+
+        Add-AppxPackage -Path (Join-Path $temp 'vclibs.appx') -ErrorAction Stop
+        Add-AppxPackage -Path $xamlAppx.FullName -ErrorAction Stop
+        Add-AppxPackage -Path (Join-Path $temp 'winget.msixbundle') -ErrorAction Stop
+
+        Update-SessionEnvironment
+        Start-Sleep -Seconds 2   # the WindowsApps shim takes a moment to register
+
+        $resolved = Resolve-WingetCommand
+        if ($resolved) {
+            Write-Host "   OK: winget is available." -ForegroundColor DarkGray
+            return $resolved
+        }
+
+        Write-Warning "App Installer registered but winget still isn't resolvable in this session."
+        return $null
+    }
+    catch {
+        Write-Warning "winget bootstrap failed: $($_.Exception.Message)"
+        return $null
+    }
+    finally {
+        $ProgressPreference = $previousProgress
+        Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # winget wrapper that actually reports failures instead of silently continuing.
 function Install-WingetPackage {
     param(
@@ -50,8 +123,13 @@ function Install-WingetPackage {
         [Parameter(Mandatory)] [string] $DisplayName
     )
 
+    if (-not $script:WingetExe) {
+        Write-Warning "Skipping $DisplayName - winget is not available."
+        return $false
+    }
+
     Write-Host "Installing $DisplayName..." -ForegroundColor Green
-    winget install -e --id $Id --accept-package-agreements --accept-source-agreements
+    & $script:WingetExe install -e --id $Id --accept-package-agreements --accept-source-agreements
     $code = $LASTEXITCODE
 
     # 0 = installed, 0x8A15002B (-1978335189) = already installed / no upgrade found
@@ -130,6 +208,34 @@ if ($SettingsRoot -and $SettingsRoot.PSObject.Properties.Name -contains 'setting
 
 if (-not $SettingsObj) {
     Write-Warning "No settings found in the profile. VS Code settings.json will be left untouched."
+}
+
+# ---------------------------------------------------------------------------
+# 0b. Ensure winget is available
+# ---------------------------------------------------------------------------
+
+$script:WingetExe = Resolve-WingetCommand
+
+if (-not $script:WingetExe) {
+    Write-Warning "winget was not found. This is normal on Windows Sandbox and some stripped Windows images."
+    $reply = Read-Host "Attempt to install App Installer automatically? (y/N)"
+
+    if ($reply -match '^(y|yes)$') {
+        $script:WingetExe = Install-WingetBootstrap
+    }
+}
+
+if (-not $script:WingetExe) {
+    Write-Error @"
+winget is required and unavailable, so no packages can be installed.
+
+Fix it one of these ways, then re-run this script:
+  * Install "App Installer" from the Microsoft Store
+  * Download it manually from https://aka.ms/getwinget
+  * On Windows Sandbox, re-run this script and accept the bootstrap prompt
+    (it needs an internet connection)
+"@
+    exit 1
 }
 
 # ---------------------------------------------------------------------------
