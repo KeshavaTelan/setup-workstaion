@@ -1,0 +1,11 @@
+# VS Code profiles are personal — settings, extensions, and UI state.
+# Export your own; don't commit it.
+*.code-profile
+
+# Backups the script creates
+*.bak
+
+# OS cruft
+Thumbs.db
+desktop.ini
+.DS_Store
